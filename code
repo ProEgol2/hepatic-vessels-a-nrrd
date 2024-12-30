@@ -1,0 +1,128 @@
+import nibabel as nib
+import pydicom
+import os
+import nrrd
+import numpy as np
+
+#Obtener.dcm y .nii segun id
+patient_id = "1070"
+#Ruta relativa dentro de folder con todas las carpetas CT
+ruta_dcm = f"colorectal_liver\Colorectal-Liver-Metastases\CRLM-CT-{patient_id}"
+ruta_nii = f"Vessel_Jose-20241218T182958Z-001\Vessel_Jose\predict\hepaticvessellc_{patient_id}.nii.gz"
+ruta_mask = r"colorectal\colorectal\masks_vss"
+ruta_ground = r"colorectal\colorectal\images"
+ruta_salida = f"nrrd_out\hepaticvessellc_{patient_id}"
+
+def leer(dir):
+    data, header = nrrd.read(dir)
+    # Ver metadatos
+    for key, value in header.items():
+        type_ = type(value)
+        print(f"Key: {key}   Value: {value}  Type: {type_}")
+
+def get_dcms(dcm_path):
+    #Encontrar carpeta con archivos .dcm (Asume que carpetas son del modo dcm_path\fecha\carpeta_con_multiples_dcm)
+    for folder_1 in os.listdir(dcm_path):
+            for folder_2 in os.listdir(os.path.join(dcm_path, folder_1)):
+                if len(os.listdir(os.path.join(dcm_path, folder_1, folder_2))) > 1:
+                    print(folder_2)
+                    dicom_folder = os.path.join(dcm_path, folder_1, folder_2)
+                    print(dicom_folder)
+                    return dicom_folder
+
+def get_nrrd_header(dir):
+    nii_data = nib.load(dir)
+    image_data = nii_data.get_fdata()
+
+    #print(nii_data.affine)
+    space_origin = (nii_data.affine[:3, 3]).tolist()
+    #print(space_origin)
+    space_directions = tuple(abs(nii_data.affine[:3, :3].T).tolist())
+    #print(space_directions)
+
+    nrrd_header = {
+        'type': 'float',
+        'dimension': 3,
+        'space': 'left-posterior-superior',
+        'sizes': image_data.shape,
+        "space directions": space_directions,  # Direcciones espaciales
+        "space origin": (-1*space_origin[0], -1*space_origin[1], space_origin[2]),  # Origen espacial
+    }
+    return nrrd_header
+
+def load_dicom_metadata(dicom_folder):
+    metadata = {}
+    for filename in os.listdir(dicom_folder):
+        if filename.endswith(".dcm"):
+            dicom_path = os.path.join(dicom_folder, filename)
+            dicom_data = pydicom.dcmread(dicom_path)
+            # Metadatos del DICOM
+            #print(dicom_data)
+            
+            for elem in dicom_data:
+                if elem.VR != "OW" and elem.VR != "SQ":
+                    #print(f"{elem.tag}: {elem.name} = {elem.value}, {type(elem.value)}")
+                    metadata[elem.name.replace(" ", "").replace("'s", "").replace("(", "").replace(")", "")] = elem.value
+
+            break  # Leer solo un archivo para obtener los metadatos generales
+    return metadata
+
+def convert_nii_to_nrrd(nii_file, header, output_nrrd):
+    nii_data = nib.load(nii_file)
+    image_data = nii_data.get_fdata()
+
+    nrrd.write(output_nrrd, image_data, header)
+    print(f"Archivo NRRD guardado en {output_nrrd}")
+
+def convert_npy_to_nrrd(npy_folder, header, output_nrrd, patient_id):
+
+    # Listar archivos .npy en la carpeta
+    archivos_npy = [os.path.join(npy_folder, f) for f in os.listdir(npy_folder) if (f"{patient_id}" in f and f.endswith('.npy'))]
+    archivos_npy.sort()
+    #print(archivos_npy)
+
+    # Cargar y combinar los datos
+    datos = [np.load(archivo) for archivo in archivos_npy]
+    datos_combinados = np.rot90(np.flip(np.stack(datos, axis=-1), axis=(-1, 0)), k=3, axes=(0,1))
+    #print(datos_combinados)
+
+    nrrd.write(output_nrrd, datos_combinados, header)
+
+    print(f"Archivo combinado guardado como: {output_nrrd}")
+
+
+#Obtener todos los metadatos del archivo .dcm
+dicom_metadata = load_dicom_metadata(get_dcms(ruta_dcm))
+
+#Para tener todos los volumenes en la misma orientacion y posicion, obtener desde matriz affine del .nii
+header = get_nrrd_header(ruta_nii)
+header.update(dicom_metadata)
+
+if not os.path.exists(ruta_salida):
+    os.mkdir(ruta_salida)
+
+if not os.path.exists(os.path.join(ruta_salida, patient_id+"_predict.nrrd")):
+    open(os.path.join(ruta_salida, patient_id+"_predict.nrrd"), "w")
+    print("Archivo creado.")
+else:
+    print("El archivo predict ya existe.")
+
+if not os.path.exists(os.path.join(ruta_salida, patient_id+"_mask.nrrd")):
+    open(os.path.join(ruta_salida, patient_id+"_mask.nrrd"), "w")
+    print("Archivo creado.")
+else:
+    print("El archivo mask ya existe.")
+
+if not os.path.exists(os.path.join(ruta_salida, patient_id+"_ground.nrrd")):
+    open(os.path.join(ruta_salida, patient_id+"_ground.nrrd"), "w")
+    print("Archivo creado.")
+else:
+    print("El archivo ground ya existe.")
+
+convert_nii_to_nrrd(ruta_nii, header, os.path.join(ruta_salida, patient_id+"_predict.nrrd"))
+convert_npy_to_nrrd(ruta_mask, header, os.path.join(ruta_salida, patient_id+"_mask.nrrd"), patient_id)
+convert_npy_to_nrrd(ruta_ground, header, os.path.join(ruta_salida, patient_id+"_ground.nrrd"), patient_id)
+
+#leer(os.path.join(ruta_salida, patient_id+"_predict.nrrd"))
+#leer(os.path.join(ruta_salida, patient_id+"_mask.nrrd"))
+leer(os.path.join(ruta_salida, patient_id+"_ground.nrrd"))
